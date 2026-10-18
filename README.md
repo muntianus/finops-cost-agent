@@ -39,3 +39,9 @@ python3 finops_agent.py serve --port 4030
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## Contact / Support
+
+PerfOps official Telegram contact: [@perfops_ai_manager](https://t.me/perfops_ai_manager).
+
+For security vulnerabilities, use private vulnerability reporting rather than public Telegram messages.
