@@ -18,7 +18,12 @@ from finops_service.analyzer import (
     analyze_nat_egress,
     get_perfops_estate_preset,
 )
-from finops_service.server import SERVICE_VERSION, create_server, run_server
+from finops_service.server import (
+    SERVICE_VERSION,
+    create_server,
+    run_server,
+    seed_preset_audits,
+)
 
 __all__ = [
     "SKU_CATALOG",
@@ -31,6 +36,7 @@ __all__ = [
     "get_perfops_estate_preset",
     "main",
     "run_server",
+    "seed_preset_audits",
 ]
 
 
@@ -52,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     audit_p.add_argument("--input", help="Path to custom workload JSON payload")
     audit_p.add_argument("--db", default=os.environ.get("FINOPS_DB_PATH", "finops_audit.db"))
 
+    seed_p = sub.add_parser(
+        "seed-presets",
+        help="Seed built-in FinOps audit presets into SQLite (idempotent)",
+    )
+    seed_p.add_argument("--db", default=os.environ.get("FINOPS_DB_PATH", "finops_audit.db"))
+
     sub.add_parser("catalog", help="Print the cloud, VPS, and LLM pricing catalog as JSON")
     return parser
 
@@ -66,6 +78,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "catalog":
         print(json.dumps(SKU_CATALOG, indent=2))
+        return 0
+
+    if args.command == "seed-presets":
+        analyzer = FinOpsAnalyzer(store=FinOpsAuditStore(args.db))
+        before = analyzer.store.count_audits()
+        cache = seed_preset_audits(analyzer)
+        print(
+            json.dumps(
+                {
+                    "db_path": args.db,
+                    "audits_before": before,
+                    "audits_after": analyzer.store.count_audits(),
+                    "presets": {
+                        name: report["audit_id"] for name, report in cache.items()
+                    },
+                },
+                indent=2,
+            )
+        )
         return 0
 
     # Default or "audit" command runs the estate analysis
