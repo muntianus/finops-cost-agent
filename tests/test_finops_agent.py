@@ -9,6 +9,7 @@ import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from finops_agent import (
     SKU_CATALOG,
@@ -137,7 +138,18 @@ class TestFinOpsAnalyzerMath(unittest.TestCase):
 class TestFinOpsHTTPServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ["FINOPS_QUIET"] = "1"
+        # Keep the shared server deterministic even if the developer shell exports these.
+        cls._env_patch = patch.dict(
+            os.environ,
+            {
+                "FINOPS_QUIET": "1",
+                "FINOPS_API_TOKEN": "",
+                "FINOPS_MAX_BODY_BYTES": "",
+                "FINOPS_MAX_BULK_BODY_BYTES": "",
+            },
+        )
+        cls._env_patch.start()
+        cls.addClassCleanup(cls._env_patch.stop)
         cls.server = create_server(host="127.0.0.1", port=0, db_path=":memory:")
         cls.port = cls.server.server_address[1]
         cls.base_url = f"http://127.0.0.1:{cls.port}"
@@ -250,6 +262,22 @@ class TestFinOpsHTTPServer(unittest.TestCase):
         audit_ids = {a["audit_id"] for a in audits_resp["audits"]}
         self.assertIn(preset_report["audit_id"], audit_ids)
 
+    def test_preset_get_is_read_only_and_cached(self) -> None:
+        store = self.server.analyzer.store
+        audits_before = store.count_audits()
+        recommendations_before = store.count_recommendations()
+
+        first = self._get_json("/api/v1/presets/perfops-estate")
+        second = self._get_json("/api/v1/presets/perfops-estate")
+
+        self.assertEqual(store.count_audits(), audits_before)
+        self.assertEqual(store.count_recommendations(), recommendations_before)
+        self.assertEqual(first["audit_id"], second["audit_id"])
+        self.assertEqual(first["timestamp"], second["timestamp"])
+
+        audits = self._get_json("/api/v1/audits")["audits"]
+        self.assertIn(first["audit_id"], {a["audit_id"] for a in audits})
+
     def test_404_on_unknown_route(self) -> None:
         with self.assertRaises(HTTPError) as ctx:
             urlopen(f"{self.base_url}/api/v1/nonexistent", timeout=5)
@@ -257,6 +285,115 @@ class TestFinOpsHTTPServer(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 404)
         finally:
             ctx.exception.close()
+
+
+class TestFinOpsHTTPHardening(unittest.TestCase):
+    """Body size limits and optional bearer authentication."""
+
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(os.environ, {"FINOPS_QUIET": "1"})
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        self._servers = []
+
+    def tearDown(self) -> None:
+        for server, thread in self._servers:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+    def _start(self, **kwargs):
+        server = create_server(host="127.0.0.1", port=0, db_path=":memory:", **kwargs)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self._servers.append((server, thread))
+        return f"http://127.0.0.1:{server.server_address[1]}", server
+
+    @staticmethod
+    def _get_json(base_url: str, path: str, token: str = "") -> tuple:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        with urlopen(Request(f"{base_url}{path}", headers=headers, method="GET"), timeout=5) as resp:
+            return resp.status, resp.headers, json.loads(resp.read().decode("utf-8"))
+
+    def _expect_http_error(self, request: Request) -> HTTPError:
+        with self.assertRaises(HTTPError) as ctx:
+            urlopen(request, timeout=5)
+        error = ctx.exception
+        self.addCleanup(error.close)
+        return error
+
+    def test_oversized_bulk_body_returns_413(self) -> None:
+        base_url, _ = self._start(max_bulk_body_bytes=1024)
+        payload = b'{"workloads": []}' + b" " * 4096
+        request = Request(
+            f"{base_url}/api/v1/analyze",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        error = self._expect_http_error(request)
+        self.assertEqual(error.code, 413)
+        self.assertEqual(error.headers.get("Connection"), "close")
+        body = json.loads(error.read().decode("utf-8"))
+        self.assertEqual(body["error"], "payload_too_large")
+        self.assertEqual(body["limit_bytes"], 1024)
+        self.assertEqual(body["received_bytes"], len(payload))
+
+    def test_body_within_bulk_limit_is_accepted(self) -> None:
+        base_url, _ = self._start(max_bulk_body_bytes=4096)
+        payload = json.dumps({"workloads": [], "persist": False}).encode("utf-8")
+        request = Request(
+            f"{base_url}/api/v1/analyze",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(json.loads(resp.read().decode("utf-8"))["summary"]["recommendation_count"], 0)
+
+    def test_auth_required_when_token_configured(self) -> None:
+        base_url, _ = self._start(api_token="secret-test-token")
+
+        status, _, health = self._get_json(base_url, "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(health["status"], "ok")
+
+        error = self._expect_http_error(Request(f"{base_url}/api/v1/audits", method="GET"))
+        self.assertEqual(error.code, 401)
+        self.assertIn("Bearer", error.headers.get("WWW-Authenticate", ""))
+        self.assertEqual(json.loads(error.read().decode("utf-8"))["error"], "unauthorized")
+
+        error = self._expect_http_error(
+            Request(
+                f"{base_url}/api/v1/audits",
+                headers={"Authorization": "Bearer wrong-token"},
+                method="GET",
+            )
+        )
+        self.assertEqual(error.code, 401)
+
+        status, _, audits = self._get_json(base_url, "/api/v1/audits", token="secret-test-token")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(audits["count"], 1)
+
+        error = self._expect_http_error(
+            Request(
+                f"{base_url}/api/v1/analyze",
+                data=b'{"workloads": []}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        )
+        self.assertEqual(error.code, 401)
+
+    def test_auth_disabled_when_token_unset(self) -> None:
+        with self.assertLogs("finops_service.server", level="WARNING") as logs:
+            base_url, _ = self._start(api_token="")
+        self.assertTrue(any("FINOPS_API_TOKEN" in line for line in logs.output))
+        status, _, audits = self._get_json(base_url, "/api/v1/audits")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(audits["count"], 1)
 
 
 if __name__ == "__main__":
