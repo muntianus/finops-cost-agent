@@ -426,6 +426,51 @@ class FinOpsAuditStore:
             if self._shared_conn is None:
                 conn.close()
 
+    def get_latest_audit_id(self, preset_name: str) -> Optional[Dict[str, str]]:
+        """Return audit_id/created_at of the newest persisted audit for a preset."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT audit_id, created_at
+                FROM finops_audits
+                WHERE preset_name = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (preset_name,),
+            ).fetchone()
+        finally:
+            if self._shared_conn is None:
+                conn.close()
+        if row is None:
+            return None
+        return {"audit_id": row["audit_id"], "created_at": row["created_at"]}
+
+    def count_audits(self, preset_name: Optional[str] = None) -> int:
+        conn = self._connect()
+        try:
+            if preset_name is None:
+                row = conn.execute("SELECT COUNT(*) AS n FROM finops_audits").fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM finops_audits WHERE preset_name = ?",
+                    (preset_name,),
+                ).fetchone()
+        finally:
+            if self._shared_conn is None:
+                conn.close()
+        return int(row["n"])
+
+    def count_recommendations(self) -> int:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT COUNT(*) AS n FROM finops_recommendations").fetchone()
+        finally:
+            if self._shared_conn is None:
+                conn.close()
+        return int(row["n"])
+
     def list_audits(self, limit: int = 25) -> List[Dict[str, Any]]:
         conn = self._connect()
         try:
