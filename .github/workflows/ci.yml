@@ -25,4 +25,4 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
       - name: Verify CLI audit preset
-        run: python3 finops_agent.py audit --preset perfops-estate --db :memory: > /dev/null
+        run: "python3 finops_agent.py audit --preset perfops-estate --db :memory: > /dev/null"
