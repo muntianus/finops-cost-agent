@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from finops_service.analyzer import (
@@ -24,6 +24,25 @@ DEFAULT_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB for regular requests
 DEFAULT_MAX_BULK_BODY_BYTES = 8 * 1024 * 1024  # 8 MiB for bulk analysis payloads
 BULK_ENDPOINTS = frozenset({"/api/v1/analyze"})
 PERFOPS_PRESET_NAME = "perfops-estate"
+
+
+class Route(NamedTuple):
+    method: str
+    path: str
+    handler: str  # FinOpsHTTPRequestHandler method name
+    public: bool = False  # True = served without the bearer token
+
+
+# Every route the service answers. tests/test_openapi_contract.py keeps this
+# table and docs/api/openapi.json in lockstep; the GET 404 body lists it too.
+ROUTES: Tuple[Route, ...] = (
+    Route("GET", "/health", "_get_health", public=True),
+    Route("GET", "/api/v1/catalog/skus", "_get_catalog"),
+    Route("POST", "/api/v1/analyze", "_post_analyze"),
+    Route("GET", "/api/v1/presets/perfops-estate", "_get_preset"),
+    Route("GET", "/api/v1/audits", "_get_audits"),
+)
+_ROUTE_INDEX = {(r.method, r.path): r for r in ROUTES}
 
 logger = logging.getLogger(__name__)
 
@@ -245,92 +264,78 @@ class FinOpsHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        self._dispatch("GET")
+
+    def do_POST(self) -> None:
+        self._dispatch("POST")
+
+    def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
+        route = _ROUTE_INDEX.get((method, path))
 
-        if path == "/health":
-            self._send_json(
-                200,
-                {
-                    "status": "ok",
-                    "service": "finops-cost-agent",
-                    "version": SERVICE_VERSION,
-                },
-            )
-            return
-
-        if not self._is_authorized():
+        # Only public routes skip auth; unknown paths answer 401 before 404.
+        if (route is None or not route.public) and not self._is_authorized():
             self._reject_unauthorized()
             return
 
-        if path == "/api/v1/catalog/skus":
-            provider = query.get("provider", [None])[0]
-            if provider and provider in SKU_CATALOG:
-                catalog_data = {provider: SKU_CATALOG[provider]}
-            else:
-                catalog_data = SKU_CATALOG
-            self._send_json(
-                200,
-                {
-                    "version": SERVICE_VERSION,
-                    "providers": list(catalog_data.keys()),
-                    "catalog": catalog_data,
-                },
-            )
+        if route is None:
+            body: Dict[str, Any] = {"error": "not_found", "path": path}
+            if method == "GET":
+                body["endpoints"] = [f"{r.method} {r.path}" for r in ROUTES]
+            self._send_json(404, body)
             return
 
-        if path == "/api/v1/presets/perfops-estate":
-            report = self.server.preset_cache.get(PERFOPS_PRESET_NAME)
-            if report is None:  # pragma: no cover - seed_preset_audits always fills it
-                report = build_preset_report(self.server.analyzer, persist=False)
-            # GET is side-effect free: serve the startup cache, never touch SQLite.
-            self._send_json(200, copy.deepcopy(report))
-            return
+        getattr(self, route.handler)(path, parse_qs(parsed.query))
 
-        if path == "/api/v1/audits":
-            limit_raw = query.get("limit", ["25"])[0]
-            try:
-                limit = max(1, min(200, int(limit_raw)))
-            except ValueError:
-                limit = 25
-            audits = self.server.analyzer.store.list_audits(limit=limit)
-            self._send_json(
-                200,
-                {
-                    "count": len(audits),
-                    "audits": audits,
-                },
-            )
-            return
-
+    def _get_health(self, path: str, query: Dict[str, list]) -> None:
         self._send_json(
-            404,
+            200,
             {
-                "error": "not_found",
-                "path": path,
-                "endpoints": [
-                    "GET /health",
-                    "GET /api/v1/catalog/skus",
-                    "POST /api/v1/analyze",
-                    "GET /api/v1/presets/perfops-estate",
-                    "GET /api/v1/audits",
-                ],
+                "status": "ok",
+                "service": "finops-cost-agent",
+                "version": SERVICE_VERSION,
             },
         )
 
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
+    def _get_catalog(self, path: str, query: Dict[str, list]) -> None:
+        provider = query.get("provider", [None])[0]
+        if provider and provider in SKU_CATALOG:
+            catalog_data = {provider: SKU_CATALOG[provider]}
+        else:
+            catalog_data = SKU_CATALOG
+        self._send_json(
+            200,
+            {
+                "version": SERVICE_VERSION,
+                "providers": list(catalog_data.keys()),
+                "catalog": catalog_data,
+            },
+        )
 
-        if not self._is_authorized():
-            self._reject_unauthorized()
-            return
+    def _get_preset(self, path: str, query: Dict[str, list]) -> None:
+        report = self.server.preset_cache.get(PERFOPS_PRESET_NAME)
+        if report is None:  # pragma: no cover - seed_preset_audits always fills it
+            report = build_preset_report(self.server.analyzer, persist=False)
+        # GET is side-effect free: serve the startup cache, never touch SQLite.
+        self._send_json(200, copy.deepcopy(report))
 
-        if path != "/api/v1/analyze":
-            self._send_json(404, {"error": "not_found", "path": path})
-            return
+    def _get_audits(self, path: str, query: Dict[str, list]) -> None:
+        limit_raw = query.get("limit", ["25"])[0]
+        try:
+            limit = max(1, min(200, int(limit_raw)))
+        except ValueError:
+            limit = 25
+        audits = self.server.analyzer.store.list_audits(limit=limit)
+        self._send_json(
+            200,
+            {
+                "count": len(audits),
+                "audits": audits,
+            },
+        )
 
+    def _post_analyze(self, path: str, query: Dict[str, list]) -> None:
         raw_body = self._read_request_body(self._body_limit_for(path))
         if raw_body is None:
             return

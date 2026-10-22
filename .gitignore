@@ -5,3 +5,9 @@ __pycache__/
 *.db
 *.sqlite3
 .env
+.venv/
+*.log
+.DS_Store
+# local config — only .env.example is tracked
+.env.*
+!.env.example

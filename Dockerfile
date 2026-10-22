@@ -7,15 +7,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=4030 \
     FINOPS_DB_PATH=/data/finops_audit.db
 
-RUN mkdir -p /data
+RUN useradd --system --uid 10001 --home-dir /app finops \
+    && mkdir -p /data \
+    && chown finops /data
 
 COPY finops_agent.py /app/finops_agent.py
 COPY finops_service /app/finops_service
-COPY tests /app/tests
 
 EXPOSE 4030
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4030/health', timeout=2)" || exit 1
+
+USER finops
 
 CMD ["python3", "finops_agent.py", "serve", "--host", "0.0.0.0", "--port", "4030"]

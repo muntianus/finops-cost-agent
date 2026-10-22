@@ -1,0 +1,534 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FinOps Cost Agent",
+    "version": "1.1.0",
+    "description": "Cloud, VPS, container and LLM cost auditing with rightsizing, NAT egress and model-routing recommendations."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4030",
+      "description": "Local / VPS loopback"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Liveness probe (no dependencies, never authenticated)",
+        "tags": [
+          "ops"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/catalog/skus": {
+      "get": {
+        "operationId": "getSkuCatalog",
+        "summary": "SKU price catalog (AWS, GCP, Hostinger, Docker, LLM)",
+        "tags": [
+          "catalog"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "description": "Return one provider; unknown values return the full catalog",
+            "schema": {
+              "type": "string",
+              "examples": [
+                "aws",
+                "gcp",
+                "hostinger",
+                "docker",
+                "llm"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "version",
+                    "providers",
+                    "catalog"
+                  ],
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "catalog": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (only when FINOPS_API_TOKEN is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/analyze": {
+      "post": {
+        "operationId": "analyzeEstate",
+        "summary": "Audit an estate: rightsizing, NAT egress and LLM routing savings",
+        "tags": [
+          "audits"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              },
+              "example": {
+                "estate_name": "staging",
+                "persist": false,
+                "workloads": [
+                  {
+                    "resource_id": "vps-1",
+                    "provider": "hostinger",
+                    "sku": "kvm-8",
+                    "cpu_p95_pct": 28.5,
+                    "mem_p95_pct": 38.0,
+                    "steady_state": true
+                  }
+                ],
+                "egress": [
+                  {
+                    "resource_id": "nat-1",
+                    "provider": "aws",
+                    "gb_processed": 2400,
+                    "rate_per_gb": 0.045
+                  }
+                ],
+                "llm_usage": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audit report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not a JSON object or Content-Length is invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "411": {
+            "description": "Chunked transfer encoding is not accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body over FINOPS_MAX_BULK_BODY_BYTES (default 8 MiB)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (only when FINOPS_API_TOKEN is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/presets/perfops-estate": {
+      "get": {
+        "operationId": "getPerfopsEstatePreset",
+        "summary": "Audit of the built-in PerfOps production estate (served from the startup cache)",
+        "tags": [
+          "audits"
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (only when FINOPS_API_TOKEN is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/audits": {
+      "get": {
+        "operationId": "listAudits",
+        "summary": "Recent persisted audits, newest first",
+        "tags": [
+          "audits"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1–200; invalid values fall back to 25",
+            "schema": {
+              "type": "integer",
+              "default": 25
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "count",
+                    "audits"
+                  ],
+                  "properties": {
+                    "count": {
+                      "type": "integer"
+                    },
+                    "audits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (only when FINOPS_API_TOKEN is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status",
+          "service",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "Workload": {
+        "type": "object",
+        "required": [
+          "resource_id",
+          "provider",
+          "sku"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "monthly_cost_usd": {
+            "type": "number"
+          },
+          "cpu_p95_pct": {
+            "type": "number"
+          },
+          "mem_p95_pct": {
+            "type": "number"
+          },
+          "steady_state": {
+            "type": "boolean"
+          },
+          "migration_cost_usd": {
+            "type": "number"
+          }
+        }
+      },
+      "EgressItem": {
+        "type": "object",
+        "required": [
+          "resource_id",
+          "gb_processed"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "gb_processed": {
+            "type": "number"
+          },
+          "rate_per_gb": {
+            "type": "number"
+          },
+          "base_monthly_usd": {
+            "type": "number"
+          },
+          "offloadable_share": {
+            "type": "number"
+          }
+        }
+      },
+      "LlmUsage": {
+        "type": "object",
+        "required": [
+          "resource_id",
+          "model"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "target_fast_model": {
+            "type": "string"
+          },
+          "monthly_input_tokens_m": {
+            "type": "number"
+          },
+          "monthly_output_tokens_m": {
+            "type": "number"
+          },
+          "current_cache_hit_ratio": {
+            "type": "number"
+          },
+          "target_cache_hit_ratio": {
+            "type": "number"
+          },
+          "routine_task_share": {
+            "type": "number"
+          }
+        }
+      },
+      "AnalyzeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "estate_name": {
+            "type": "string"
+          },
+          "vps_host": {
+            "type": "string"
+          },
+          "workloads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Workload"
+            }
+          },
+          "egress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EgressItem"
+            }
+          },
+          "llm_usage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LlmUsage"
+            }
+          },
+          "persist": {
+            "type": "boolean",
+            "default": true
+          },
+          "preset_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditReport": {
+        "type": "object",
+        "required": [
+          "audit_id",
+          "timestamp",
+          "summary",
+          "recommendations"
+        ],
+        "properties": {
+          "audit_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": "object"
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "estate": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Required on every route except /health when FINOPS_API_TOKEN is set."
+      }
+    }
+  }
+}

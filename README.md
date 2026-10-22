@@ -62,6 +62,17 @@ Requests over the limit are rejected with `413 payload_too_large` before the bod
 python3 -m unittest discover -s tests -v
 ```
 
+## API contract, CI & deploy
+
+- **Contract:** [`docs/api/openapi.json`](docs/api/openapi.json) (OpenAPI 3.1).
+  `tests/test_openapi_contract.py` fails when `ROUTES` in `finops_service/server.py` and the spec disagree.
+- **Tests:** `python3 -m unittest discover -s tests -v`. CI runs it on every pull request;
+  GitGuardian scans each one for secrets.
+- **Config:** every environment variable is listed in [`.env.example`](.env.example).
+- **Deploy:** `docker build -t finops-cost-agent . && docker run -p 4030:4030 finops-cost-agent` — non-root,
+  `HEALTHCHECK` on `GET /health`. The portfolio port map lives in
+  [`muntianus/architecture`](https://github.com/muntianus/architecture).
+
 ## Contact / Support
 
 PerfOps official Telegram contact: [@perfops_ai_manager](https://t.me/perfops_ai_manager).
