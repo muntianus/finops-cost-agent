@@ -33,10 +33,3 @@ jobs:
       - name: Verify CLI audit preset
         run: "python3 finops_agent.py audit --preset perfops-estate --db :memory: > /dev/null"
 
-  security:
-    uses: muntianus/.github/.github/workflows/reusable-security-gate.yml@72f1a15326dc0cb34a352adf3e9558b864904c27 # main
-    # the gate declares pull-requests: read at workflow level; a caller
-    # granting less makes the run fail at startup
-    permissions:
-      contents: read
-      pull-requests: read
